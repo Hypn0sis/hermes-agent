@@ -57,44 +57,53 @@ _VENDOR_PREFIXES: dict[str, str] = {
 }
 
 # Providers whose APIs consume vendor/model slugs.
-_AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
-    "openrouter",
-    "nous",
-    "ai-gateway",
-    "kilocode",
-})
+_AGGREGATOR_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "openrouter",
+        "nous",
+        "ai-gateway",
+        "kilocode",
+    }
+)
 
 # Providers that want bare names with dots replaced by hyphens.
-_DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
-    "anthropic",
-    "opencode-zen",
-})
+_DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+    }
+)
 
 # Providers that want bare names with dots preserved.
-_STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
-    "copilot",
-    "copilot-acp",
-    "openai-codex",
-})
+_STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "copilot",
+        "copilot-acp",
+        "openai-codex",
+    }
+)
 
 # Providers whose native naming is authoritative -- pass through unchanged.
-_AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
-    "gemini",
-    "huggingface",
-})
+_AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "gemini",
+        "huggingface",
+    }
+)
 
 # Direct providers that accept bare native names but should repair a matching
 # provider/ prefix when users copy the aggregator form into config.yaml.
-_MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
-    "zai",
-    "kimi-coding",
-    "minimax",
-    "minimax-cn",
-    "alibaba",
-    "qwen-oauth",
-    "xiaomi",
-    "custom",
-})
+_MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset(
+    {
+        "zai",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
+        "alibaba",
+        "qwen-oauth",
+        "xiaomi",
+        "custom",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
@@ -102,18 +111,22 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
 # DeepSeek's API only recognises exactly two model identifiers.  We map
 # common aliases and patterns to the canonical names.
 
-_DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
-    "reasoner",
-    "r1",
-    "think",
-    "reasoning",
-    "cot",
-})
+_DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "reasoner",
+        "r1",
+        "think",
+        "reasoning",
+        "cot",
+    }
+)
 
-_DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",
-    "deepseek-reasoner",
-})
+_DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset(
+    {
+        "deepseek-chat",
+        "deepseek-reasoner",
+    }
+)
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
@@ -147,6 +160,7 @@ def _normalize_for_deepseek(model_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Helper utilities
 # ---------------------------------------------------------------------------
+
 
 def _strip_vendor_prefix(model_name: str) -> str:
     """Remove a ``vendor/`` prefix if present.
@@ -288,6 +302,7 @@ def _prepend_vendor(model_name: str) -> str:
 # Main normalisation entry point
 # ---------------------------------------------------------------------------
 
+
 def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     """Translate a model name into the format the target provider's API expects.
 
@@ -388,4 +403,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # ---------------------------------------------------------------------------
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
-
