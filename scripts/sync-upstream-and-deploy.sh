@@ -42,6 +42,7 @@ echo "▶ Checking our upstream PRs on $UPSTREAM_REPO..."
 # Populated below if gh is available; stays empty otherwise → rebase skipped gracefully.
 ACTIVE_BRANCHES=()
 BRANCHES_TO_DELETE=()
+declare -A BRANCH_PR_REASON  # maps branch → "PR #N merged upstream"
 
 if ! command -v gh &>/dev/null; then
   echo "  ⚠ gh CLI not found — skipping PR check, ACTIVE_BRANCHES empty"
@@ -79,6 +80,7 @@ else
           icon="[MERGED]"
           if [[ "$branch" != "$CURRENT_BRANCH_NOW" ]] && git show-ref --verify --quiet "refs/heads/$branch"; then
             BRANCHES_TO_DELETE+=("$branch")
+            BRANCH_PR_REASON["$branch"]="PR #$number merged upstream"
           fi
           ;;
         OPEN)
@@ -112,10 +114,12 @@ for pr in json.load(sys.stdin):
       echo ""
       echo "── Cleaning up merged branches ───────────────────────────────────────"
       for b in "${BRANCHES_TO_DELETE[@]}"; do
-        git branch -D "$b" 2>/dev/null && echo "  ✓ Deleted local: $b"
+        reason="${BRANCH_PR_REASON[$b]:-merged upstream}"
+        echo "  Removing '$b' — $reason"
+        git branch -D "$b" 2>/dev/null && echo "    ✓ Deleted local branch"
         git push "$FORK_REMOTE" --delete "$b" 2>/dev/null \
-          && echo "  ✓ Deleted fork:  $b" \
-          || echo "  ℹ Fork branch already gone: $b"
+          && echo "    ✓ Deleted fork remote branch" \
+          || echo "    ℹ Fork branch already gone"
       done
       echo "──────────────────────────────────────────────────────────────────────"
     fi
