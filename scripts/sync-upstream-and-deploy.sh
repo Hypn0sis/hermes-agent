@@ -13,6 +13,9 @@ UPSTREAM_REMOTE="origin"
 UPSTREAM_REPO="NousResearch/hermes-agent"
 FORK_REMOTE="fork"
 UPSTREAM_BRANCH="main"
+# Cumulative patch branch — carries ALL local patches (infra + fixes).
+# PR branches (fix/*) are submission-only: rebased & pushed to fork but NOT deployed from.
+PATCH_BRANCH="feat/local-patches"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
@@ -194,74 +197,71 @@ if $DRY_RUN; then
   exit 0
 fi
 
-# ── Step 2: Rebase each active branch + push to fork ────────────────────────
+# ── Step 2a: Rebase cumulative patch branch (primary — deploys from here) ─────
+echo "▶ Rebasing $PATCH_BRANCH on $UPSTREAM_REF..."
+git checkout "$PATCH_BRANCH"
+if ! git rebase "$UPSTREAM_REF"; then
+  echo ""
+  echo "✗ Rebase conflict on $PATCH_BRANCH."
+  echo "  Known safe resolutions:"
+  echo "    package-lock.json, run_agent.py → git checkout --theirs <file>"
+  echo "    gateway/platforms/discord.py    → git checkout --ours <file>"
+  echo "  Then: git rebase --continue && re-run this script"
+  git rebase --abort 2>/dev/null || true
+  git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
+  exit 1
+fi
+echo "  ✓ Rebase complete"
+git push "$FORK_REMOTE" "$PATCH_BRANCH" --force
+echo "  ✓ Fork updated ($PATCH_BRANCH)"
+
+# Print cumulative patch stack
+echo ""
+echo "── Patch stack ($PATCH_BRANCH) ───────────────────────────────────────────"
+git log --oneline "$UPSTREAM_REF"..HEAD
+echo "──────────────────────────────────────────────────────────────────────────"
+
+# ── Step 2b: Rebase PR branches (keeps open PRs up-to-date on fork) ──────────
+# These branches are submission-only — not deployed from.
 for branch in "${ACTIVE_BRANCHES[@]}"; do
+  [[ "$branch" == "$PATCH_BRANCH" ]] && continue
   if ! git rev-parse --verify "$branch" &>/dev/null; then
-    echo "  ⚠ Branch '$branch' not found locally — skipping"
+    echo "  ⚠ PR branch '$branch' not found locally — skipping"
     continue
   fi
-
-  # Check if already fully merged into upstream
   pending="$(git cherry -v "$UPSTREAM_REF" "$branch" 2>/dev/null | grep -c '^+' || true)"
   if [[ "$pending" -eq 0 ]]; then
     echo "  ⏩ $branch — already merged in upstream, skipping"
     continue
   fi
-
-  echo "▶ Rebasing $branch on $UPSTREAM_REF ($pending patch(es))..."
+  echo "▶ Rebasing PR branch $branch ($pending patch(es))..."
   git checkout "$branch"
-
   if ! git rebase "$UPSTREAM_REF"; then
-    echo ""
-    echo "✗ Rebase conflict on $branch."
-    echo "  Known safe resolutions:"
-    echo "    package-lock.json, run_agent.py → git checkout --theirs <file>"
-    echo "    gateway/platforms/discord.py    → git checkout --ours <file>"
-    echo "  Then: git rebase --continue && re-run this script"
+    echo "  ⚠ Conflict on $branch — skipping (fix separately, then re-run)"
     git rebase --abort 2>/dev/null || true
-    git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
-    exit 1
+  else
+    git push "$FORK_REMOTE" "$branch" --force
+    echo "  ✓ $branch pushed to fork"
   fi
-  echo "  ✓ Rebase complete"
-
-  echo "  ▶ Pushing $branch to $FORK_REMOTE..."
-  git push "$FORK_REMOTE" "$branch" --force
-  echo "  ✓ Fork updated"
 done
 
-# Print patch summary
-if [[ ${#ACTIVE_BRANCHES[@]} -gt 0 ]]; then
-  echo ""
-  echo "── Patch stack ───────────────────────────────────────────────────────"
-  for branch in "${ACTIVE_BRANCHES[@]}"; do
-    echo "  [$branch]"
-    git log --oneline "$UPSTREAM_REF".."$branch" | sed 's/^/    /'
-  done
-  echo "──────────────────────────────────────────────────────────────────────"
-else
-  echo "ℹ No active patch branches — deploy will run from upstream main."
-fi
+git checkout "$PATCH_BRANCH"
 
 # ── Step 3: Syntax check ──────────────────────────────────────────────────────
-# Deploy from first active branch (carries all our patches); fall back to main.
-DEPLOY_FROM="${ACTIVE_BRANCHES[0]:-main}"
-git checkout "$DEPLOY_FROM" 2>/dev/null || git checkout main
-
 echo "▶ Verifying Python syntax..."
 python3 -m py_compile gateway/run.py && echo "  ✓ Syntax OK"
 
 if ! $DO_DEPLOY; then
   echo ""
-  echo "ℹ Deploy skipped (on $DEPLOY_FROM). Run when ready: ./scripts/deploy-remote.sh"
+  echo "ℹ Deploy skipped (on $PATCH_BRANCH). Run when ready: ./scripts/deploy-remote.sh"
   git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
   exit 0
 fi
 
 # ── Step 4: Deploy ────────────────────────────────────────────────────────────
 echo ""
-echo "▶ Deploying from $DEPLOY_FROM to VPS..."
+echo "▶ Deploying from $PATCH_BRANCH to VPS..."
 
-# Load deploy credentials from .env.local if present
 ENV_LOCAL="$REPO_ROOT/.env.local"
 if [[ -f "$ENV_LOCAL" ]]; then
   set -a; source "$ENV_LOCAL"; set +a
