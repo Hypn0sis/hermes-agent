@@ -692,6 +692,17 @@ def load_gateway_config() -> GatewayConfig:
                     ):
                         if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
                             os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
+                # reply_to_mode: whether bot replies reference the triggering message (off/first/all)
+                # Supported at top-level (discord.reply_to_mode) or nested (discord.extra.reply_to_mode)
+                # Note: YAML 1.1 parses bare 'off' as boolean False, so we handle that explicitly.
+                _extra = discord_cfg.get("extra") if isinstance(discord_cfg.get("extra"), dict) else {}
+                _rtp_sources = (
+                    discord_cfg["reply_to_mode"] if "reply_to_mode" in discord_cfg
+                    else _extra.get("reply_to_mode")
+                )
+                if _rtp_sources is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
+                    _rtp_str = "off" if _rtp_sources is False else str(_rtp_sources).lower()
+                    os.environ["DISCORD_REPLY_TO_MODE"] = _rtp_str
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
