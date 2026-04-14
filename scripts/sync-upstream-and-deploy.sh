@@ -13,14 +13,6 @@ UPSTREAM_REMOTE="origin"
 UPSTREAM_REPO="NousResearch/hermes-agent"
 FORK_REMOTE="fork"
 UPSTREAM_BRANCH="main"
-DEPLOY_BRANCH="deploy/snapshot"
-
-# Open fix branches — one per open PR.
-# Remove an entry when its PR is merged upstream (confirm with: git log origin/main | grep <keyword>)
-FIX_BRANCHES=(
-  "fix/discord-free-channel-no-auto-thread"   # PR #9650
-  "fix/discord-reply-to-mode-yaml-config"     # PR #9837
-)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
@@ -43,10 +35,15 @@ cd "$REPO_ROOT"
 # ── Step 0: PR status check ───────────────────────────────────────────────────
 echo "▶ Checking our upstream PRs on $UPSTREAM_REPO..."
 
+# Active branches derived dynamically from open PRs (no hardcoded array).
+# Populated below if gh is available; stays empty otherwise → rebase skipped gracefully.
+ACTIVE_BRANCHES=()
+BRANCHES_TO_DELETE=()
+
 if ! command -v gh &>/dev/null; then
-  echo "  ⚠ gh CLI not found — skipping PR check"
+  echo "  ⚠ gh CLI not found — skipping PR check, ACTIVE_BRANCHES empty"
 elif ! gh auth status &>/dev/null 2>&1; then
-  echo "  ⚠ gh not authenticated — skipping PR check"
+  echo "  ⚠ gh not authenticated — skipping PR check, ACTIVE_BRANCHES empty"
 else
   PRS_JSON="$(gh pr list \
     --repo "$UPSTREAM_REPO" \
@@ -65,14 +62,14 @@ else
     echo "  ──────────────────────────────────────────────────────────────────"
 
     HAS_OPEN=false
-    BRANCHES_TO_DELETE=()
     CURRENT_BRANCH_NOW="$(git rev-parse --abbrev-ref HEAD)"
 
     while IFS= read -r pr; do
       number="$(echo "$pr" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['number'])")"
       title="$(echo  "$pr" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['title'][:48])")"
       state="$(echo  "$pr" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['state'])")"
-      branch="$(echo "$pr" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['headRefName'][:28])")"
+      branch="$(echo "$pr" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['headRefName'])")"
+      branch_short="${branch:0:28}"
 
       case "$state" in
         MERGED)
@@ -81,12 +78,19 @@ else
             BRANCHES_TO_DELETE+=("$branch")
           fi
           ;;
-        OPEN)   icon="[OPEN]  "; HAS_OPEN=true ;;
+        OPEN)
+          icon="[OPEN]  "
+          HAS_OPEN=true
+          # Only track branches that exist locally
+          if git show-ref --verify --quiet "refs/heads/$branch"; then
+            ACTIVE_BRANCHES+=("$branch")
+          fi
+          ;;
         CLOSED) icon="[CLOSED]" ;;
         *)      icon="[$state]" ;;
       esac
 
-      printf "  #%-5s %-10s %-30s %s\n" "$number" "$icon" "$branch" "$title"
+      printf "  #%-5s %-10s %-30s %s\n" "$number" "$icon" "$branch_short" "$title"
     done < <(echo "$PRS_JSON" | python3 -c "
 import sys, json
 for pr in json.load(sys.stdin):
@@ -109,13 +113,45 @@ for pr in json.load(sys.stdin):
         git push "$FORK_REMOTE" --delete "$b" 2>/dev/null \
           && echo "  ✓ Deleted fork:  $b" \
           || echo "  ℹ Fork branch already gone: $b"
-        # Also remove from FIX_BRANCHES tracking (informational)
-        echo "  ⚠ Remember to remove '$b' from FIX_BRANCHES in this script."
       done
       echo "──────────────────────────────────────────────────────────────────────"
     fi
     echo ""
   fi
+fi
+
+# ── Patch reality check via git cherry ───────────────────────────────────────
+# Authoritative: checks actual code diff, not just PR state.
+# Catches squash-merges and closed-without-merge where PR state lies.
+if [[ ${#ACTIVE_BRANCHES[@]} -gt 0 ]]; then
+  # Fetch quietly here so cherry is accurate even under --pr-check (exits before Step 1)
+  git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH" --quiet 2>/dev/null || true
+
+  echo "── Patch stack vs upstream (git cherry) ─────────────────────────────────"
+  for branch in "${ACTIVE_BRANCHES[@]}"; do
+    echo "  [$branch]"
+    CHERRY_OUT="$(git cherry -v "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" "$branch" 2>/dev/null || true)"
+    if [[ -z "$CHERRY_OUT" ]]; then
+      echo "    ✓ No local patches — branch is identical to upstream"
+    else
+      ABSORBED=0
+      while IFS= read -r line; do
+        marker="${line:0:1}"
+        msg="${line:2}"
+        if [[ "$marker" == "-" ]]; then
+          echo "    - [ABSORBED] $msg"
+          ABSORBED=$((ABSORBED + 1))
+        else
+          echo "    + [PENDING ] $msg"
+        fi
+      done <<< "$CHERRY_OUT"
+      if [[ $ABSORBED -gt 0 ]]; then
+        echo "    ⚠ $ABSORBED commit(s) already absorbed by upstream — rebase will drop them."
+      fi
+    fi
+  done
+  echo "─────────────────────────────────────────────────────────────────────────"
+  echo ""
 fi
 
 $PR_CHECK_ONLY && exit 0
@@ -140,8 +176,10 @@ if $DRY_RUN; then
   echo "── Dry run ───────────────────────────────────────────────────────────"
   echo "  Upstream HEAD: $(git rev-parse --short "$UPSTREAM_SHA")  $(git log --oneline -1 "$UPSTREAM_REF")"
   echo ""
-  for branch in "${FIX_BRANCHES[@]}"; do
-    branch="${branch%% *}"
+  if [[ ${#ACTIVE_BRANCHES[@]} -eq 0 ]]; then
+    echo "  No active branches found from open PRs."
+  fi
+  for branch in "${ACTIVE_BRANCHES[@]}"; do
     if ! git rev-parse --verify "$branch" &>/dev/null; then
       echo "  [$branch] not found locally"
       continue
@@ -156,12 +194,8 @@ if $DRY_RUN; then
   exit 0
 fi
 
-# ── Step 2: Rebase each fix branch + push to fork ────────────────────────────
-ACTIVE_BRANCHES=()
-
-for branch in "${FIX_BRANCHES[@]}"; do
-  branch="${branch%% *}"
-
+# ── Step 2: Rebase each active branch + push to fork ────────────────────────
+for branch in "${ACTIVE_BRANCHES[@]}"; do
   if ! git rev-parse --verify "$branch" &>/dev/null; then
     echo "  ⚠ Branch '$branch' not found locally — skipping"
     continue
@@ -193,71 +227,39 @@ for branch in "${FIX_BRANCHES[@]}"; do
   echo "  ▶ Pushing $branch to $FORK_REMOTE..."
   git push "$FORK_REMOTE" "$branch" --force
   echo "  ✓ Fork updated"
-
-  ACTIVE_BRANCHES+=("$branch")
 done
-
-git checkout "$ORIGINAL_BRANCH" 2>/dev/null || git checkout main
-
-if [[ ${#ACTIVE_BRANCHES[@]} -eq 0 ]]; then
-  echo "ℹ No active patch branches — nothing to deploy beyond upstream main."
-fi
 
 # Print patch summary
-echo ""
-echo "── Patch stack ───────────────────────────────────────────────────────"
-for branch in "${ACTIVE_BRANCHES[@]}"; do
-  echo "  [$branch]"
-  git log --oneline "$UPSTREAM_REF".."$branch" | sed 's/^/    /'
-done
-echo "──────────────────────────────────────────────────────────────────────"
+if [[ ${#ACTIVE_BRANCHES[@]} -gt 0 ]]; then
+  echo ""
+  echo "── Patch stack ───────────────────────────────────────────────────────"
+  for branch in "${ACTIVE_BRANCHES[@]}"; do
+    echo "  [$branch]"
+    git log --oneline "$UPSTREAM_REF".."$branch" | sed 's/^/    /'
+  done
+  echo "──────────────────────────────────────────────────────────────────────"
+else
+  echo "ℹ No active patch branches — deploy will run from upstream main."
+fi
 
 # ── Step 3: Syntax check ──────────────────────────────────────────────────────
+# Deploy from first active branch (carries all our patches); fall back to main.
+DEPLOY_FROM="${ACTIVE_BRANCHES[0]:-main}"
+git checkout "$DEPLOY_FROM" 2>/dev/null || git checkout main
+
 echo "▶ Verifying Python syntax..."
 python3 -m py_compile gateway/run.py && echo "  ✓ Syntax OK"
 
-$DO_DEPLOY || { echo ""; echo "ℹ Deploy skipped. Run when ready: ./scripts/deploy-remote.sh"; exit 0; }
+if ! $DO_DEPLOY; then
+  echo ""
+  echo "ℹ Deploy skipped (on $DEPLOY_FROM). Run when ready: ./scripts/deploy-remote.sh"
+  git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
+  exit 0
+fi
 
-# ── Step 4: Build deploy snapshot ────────────────────────────────────────────
-echo "▶ Building deploy snapshot: $DEPLOY_BRANCH..."
-
-git checkout main
-git reset --hard "$UPSTREAM_REF"
-
-git branch -D "$DEPLOY_BRANCH" 2>/dev/null || true
-git checkout -b "$DEPLOY_BRANCH"
-
-for branch in "${ACTIVE_BRANCHES[@]}"; do
-  echo "  Merging $branch..."
-  if git merge --no-ff --no-edit "$branch"; then
-    continue
-  fi
-  # Auto-resolve add/add conflicts in scripts/ (same file added by multiple branches)
-  conflicts="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
-  unresolved=()
-  while IFS= read -r file; do
-    [[ -z "$file" ]] && continue
-    if [[ "$file" == scripts/* ]]; then
-      git checkout --ours -- "$file"
-      git add "$file"
-      echo "  ✓ auto-resolved (ours): $file"
-    else
-      unresolved+=("$file")
-    fi
-  done <<< "$conflicts"
-  if [[ ${#unresolved[@]} -gt 0 ]]; then
-    echo "✗ Unresolvable merge conflict in $branch: ${unresolved[*]}"
-    git merge --abort 2>/dev/null || true
-    git checkout "$ORIGINAL_BRANCH"
-    git branch -D "$DEPLOY_BRANCH" 2>/dev/null || true
-    exit 1
-  fi
-  git commit --no-edit
-done
-
-# ── Step 5: Deploy ────────────────────────────────────────────────────────────
+# ── Step 4: Deploy ────────────────────────────────────────────────────────────
 echo ""
-echo "▶ Deploying snapshot to VPS..."
+echo "▶ Deploying from $DEPLOY_FROM to VPS..."
 
 # Load deploy credentials from .env.local if present
 ENV_LOCAL="$REPO_ROOT/.env.local"
@@ -267,7 +269,6 @@ fi
 
 bash "$SCRIPT_DIR/deploy-remote.sh"
 
-# ── Cleanup ───────────────────────────────────────────────────────────────────
-git checkout "$ORIGINAL_BRANCH"
-git branch -D "$DEPLOY_BRANCH" 2>/dev/null || true
+# ── Return to original branch ─────────────────────────────────────────────────
+git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
 echo "✓ Done. Back on: $ORIGINAL_BRANCH"
