@@ -42,7 +42,14 @@ echo "▶ Checking our upstream PRs on $UPSTREAM_REPO..."
 # Populated below if gh is available; stays empty otherwise → rebase skipped gracefully.
 ACTIVE_BRANCHES=()
 BRANCHES_TO_DELETE=()
-BRANCH_DELETE_REASONS=()  # parallel array: reason[i] matches branch[i]
+BRANCH_DELETE_REASONS=()
+RPT_BRANCHES_DELETED=()
+RPT_REBASE="skipped"
+RPT_PR_BRANCHES_REBASED=()
+RPT_PATCHES_PENDING=0
+RPT_PATCHES_ABSORBED=0
+RPT_FORK_PUSHED=false
+RPT_DEPLOYED=false
 
 if ! command -v gh &>/dev/null; then
   echo "  ⚠ gh CLI not found — skipping PR check, ACTIVE_BRANCHES empty"
@@ -121,6 +128,7 @@ for pr in json.load(sys.stdin):
         git push "$FORK_REMOTE" --delete "$b" 2>/dev/null \
           && echo "    ✓ Deleted fork remote branch" \
           || echo "    ℹ Fork branch already gone"
+        RPT_BRANCHES_DELETED+=("$b ($reason)")
       done
       echo "──────────────────────────────────────────────────────────────────────"
     fi
@@ -149,8 +157,10 @@ if [[ ${#ACTIVE_BRANCHES[@]} -gt 0 ]]; then
         if [[ "$marker" == "-" ]]; then
           echo "    - [ABSORBED] $msg"
           ABSORBED=$((ABSORBED + 1))
+          RPT_PATCHES_ABSORBED=$((RPT_PATCHES_ABSORBED + 1))
         else
           echo "    + [PENDING ] $msg"
+          RPT_PATCHES_PENDING=$((RPT_PATCHES_PENDING + 1))
         fi
       done <<< "$CHERRY_OUT"
       if [[ $ABSORBED -gt 0 ]]; then
@@ -217,8 +227,10 @@ if ! git rebase "$UPSTREAM_REF"; then
   exit 1
 fi
 echo "  ✓ Rebase complete"
+RPT_REBASE="rebased on $(git rev-parse --short "$UPSTREAM_REF")"
 git push "$FORK_REMOTE" "$PATCH_BRANCH" --force
 echo "  ✓ Fork updated ($PATCH_BRANCH)"
+RPT_FORK_PUSHED=true
 
 # Print cumulative patch stack
 echo ""
@@ -247,6 +259,7 @@ for branch in "${ACTIVE_BRANCHES[@]}"; do
   else
     git push "$FORK_REMOTE" "$branch" --force
     echo "  ✓ $branch pushed to fork"
+    RPT_PR_BRANCHES_REBASED+=("$branch")
   fi
 done
 
@@ -260,6 +273,24 @@ if ! $DO_DEPLOY; then
   echo ""
   echo "ℹ Deploy skipped (on $PATCH_BRANCH). Run when ready: ./scripts/deploy-remote.sh"
   git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
+  echo ""
+  echo "╔══════════════════════════════════════════════════════════════════════╗"
+  echo "║  Run Report — $(date '+%Y-%m-%d %H:%M:%S')                         "
+  echo "╠══════════════════════════════════════════════════════════════════════╣"
+  printf "║  %-22s %s\n" "Upstream:" "$RPT_REBASE"
+  printf "║  %-22s %d pending, %d absorbed\n" "Patch stack:" "$RPT_PATCHES_PENDING" "$RPT_PATCHES_ABSORBED"
+  if $RPT_FORK_PUSHED; then
+    printf "║  %-22s %s\n" "Fork:" "pushed Hypn0sis/$PATCH_BRANCH"
+  fi
+  if [[ ${#RPT_BRANCHES_DELETED[@]} -gt 0 ]]; then
+    for entry in "${RPT_BRANCHES_DELETED[@]}"; do
+      printf "║  %-22s %s\n" "Branch removed:" "$entry"
+    done
+  else
+    printf "║  %-22s %s\n" "Branch cleanup:" "nothing to remove"
+  fi
+  printf "║  %-22s %s\n" "Deploy:" "skipped (--no-deploy)"
+  echo "╚══════════════════════════════════════════════════════════════════════╝"
   exit 0
 fi
 
@@ -273,7 +304,30 @@ if [[ -f "$ENV_LOCAL" ]]; then
 fi
 
 bash "$SCRIPT_DIR/deploy-remote.sh"
+RPT_DEPLOYED=true
 
 # ── Return to original branch ─────────────────────────────────────────────────
 git checkout "$ORIGINAL_BRANCH" 2>/dev/null || true
-echo "✓ Done. Back on: $ORIGINAL_BRANCH"
+
+# ── Session Report ────────────────────────────────────────────────────────────
+echo ""
+echo "╔══════════════════════════════════════════════════════════════════════╗"
+echo "║  Run Report — $(date '+%Y-%m-%d %H:%M:%S')                         "
+echo "╠══════════════════════════════════════════════════════════════════════╣"
+printf "║  %-22s %s\n" "Upstream:" "$RPT_REBASE"
+printf "║  %-22s %d pending, %d absorbed\n" "Patch stack:" "$RPT_PATCHES_PENDING" "$RPT_PATCHES_ABSORBED"
+if $RPT_FORK_PUSHED; then
+  printf "║  %-22s %s\n" "Fork:" "pushed Hypn0sis/$PATCH_BRANCH"
+fi
+if [[ ${#RPT_PR_BRANCHES_REBASED[@]} -gt 0 ]]; then
+  printf "║  %-22s %s\n" "PR branches rebased:" "${RPT_PR_BRANCHES_REBASED[*]}"
+fi
+if [[ ${#RPT_BRANCHES_DELETED[@]} -gt 0 ]]; then
+  for entry in "${RPT_BRANCHES_DELETED[@]}"; do
+    printf "║  %-22s %s\n" "Branch removed:" "$entry"
+  done
+else
+  printf "║  %-22s %s\n" "Branch cleanup:" "nothing to remove"
+fi
+printf "║  %-22s %s\n" "Deploy:" "$(if $RPT_DEPLOYED; then echo "✓ hypnosis@${DEPLOY_HOST:-87.106.215.151}"; else echo "skipped"; fi)"
+echo "╚══════════════════════════════════════════════════════════════════════╝"
