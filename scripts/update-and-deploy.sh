@@ -179,7 +179,7 @@ for branch in "${UNMERGED_BRANCHES[@]}"; do
   if [[ ${#unresolved[@]} -gt 0 ]]; then
     fail "Merge conflict in '$branch' (unresolvable files: ${unresolved[*]}). Inspect and re-run."
   fi
-  git merge --continue --no-edit
+  git commit --no-edit
 done
 
 info "Snapshot: $(git log --oneline -5)"
