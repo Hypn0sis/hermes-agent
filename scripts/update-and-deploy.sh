@@ -161,9 +161,25 @@ git checkout -b "$DEPLOY_BRANCH"
 
 for branch in "${UNMERGED_BRANCHES[@]}"; do
   info "Merging $branch into snapshot ..."
-  if ! git merge --no-ff --no-edit "$branch"; then
-    fail "Merge conflict merging '$branch' into snapshot. Inspect and re-run."
+  if git merge --no-ff --no-edit "$branch"; then
+    continue
   fi
+  # Auto-resolve add/add conflicts in scripts/ — same file added by multiple branches
+  conflicts=$(git diff --name-only --diff-filter=U 2>/dev/null || true)
+  unresolved=()
+  while IFS= read -r file; do
+    if [[ "$file" == scripts/* ]]; then
+      info "  auto-resolve merge conflict (take ours): $file"
+      git checkout --ours -- "$file"
+      git add "$file"
+    else
+      unresolved+=("$file")
+    fi
+  done <<< "$conflicts"
+  if [[ ${#unresolved[@]} -gt 0 ]]; then
+    fail "Merge conflict in '$branch' (unresolvable files: ${unresolved[*]}). Inspect and re-run."
+  fi
+  git merge --continue --no-edit
 done
 
 info "Snapshot: $(git log --oneline -5)"
