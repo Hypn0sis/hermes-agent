@@ -172,6 +172,36 @@ if [[ ${#ACTIVE_BRANCHES[@]} -gt 0 ]]; then
   echo ""
 fi
 
+# ── Shadow coverage check ─────────────────────────────────────────────────────
+# git cherry catches exact patch-id matches, but misses cases where upstream
+# re-implemented the same fix differently. This check flags files touched by
+# both our PENDING commits and upstream since our branch point — candidates
+# for manual inspection ("did upstream absorb this semantically?").
+if git rev-parse --verify "$PATCH_BRANCH" &>/dev/null; then
+  BASE_SHA="$(git merge-base "$PATCH_BRANCH" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" 2>/dev/null || true)"
+  if [[ -n "$BASE_SHA" ]]; then
+    OUR_FILES="$(git diff --name-only "$BASE_SHA" "$PATCH_BRANCH" -- '*.py' 2>/dev/null | sort -u || true)"
+    UPSTREAM_FILES="$(git diff --name-only "$BASE_SHA" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" -- '*.py' 2>/dev/null | sort -u || true)"
+    SHADOW_FILES="$(comm -12 <(echo "$OUR_FILES") <(echo "$UPSTREAM_FILES") 2>/dev/null || true)"
+
+    echo "── Shadow coverage check ─────────────────────────────────────────────────"
+    if [[ -n "$SHADOW_FILES" ]]; then
+      echo "  ⚠ Files touched by BOTH our patches AND upstream — verify manually:"
+      while IFS= read -r f; do
+        # Show which of our commits last touched this file
+        last_commit="$(git log --oneline "$BASE_SHA".."$PATCH_BRANCH" -- "$f" 2>/dev/null | head -1 || true)"
+        echo "    $f"
+        [[ -n "$last_commit" ]] && echo "      our: $last_commit"
+      done <<< "$SHADOW_FILES"
+      echo "  → Run: git diff $UPSTREAM_REMOTE/$UPSTREAM_BRANCH -- <file> to compare"
+    else
+      echo "  ✓ No file overlap — no shadow absorption risk"
+    fi
+    echo "─────────────────────────────────────────────────────────────────────────"
+    echo ""
+  fi
+fi
+
 $PR_CHECK_ONLY && exit 0
 
 # ── Sanity checks ─────────────────────────────────────────────────────────────
