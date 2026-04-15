@@ -74,6 +74,7 @@ else
 
     HAS_OPEN=false
     CURRENT_BRANCH_NOW="$(git rev-parse --abbrev-ref HEAD)"
+    OPEN_PR_BRANCHES=()
 
     while IFS= read -r pr; do
       number="$(echo "$pr" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['number'])")"
@@ -93,6 +94,7 @@ else
         OPEN)
           icon="[OPEN]  "
           HAS_OPEN=true
+          OPEN_PR_BRANCHES+=("$branch")
           # Only track branches that exist locally
           if git show-ref --verify --quiet "refs/heads/$branch"; then
             ACTIVE_BRANCHES+=("$branch")
@@ -173,34 +175,45 @@ if [[ ${#ACTIVE_BRANCHES[@]} -gt 0 ]]; then
 fi
 
 # ── Shadow coverage check ─────────────────────────────────────────────────────
-# git cherry catches exact patch-id matches, but misses cases where upstream
-# re-implemented the same fix differently. This check flags files touched by
-# both our PENDING commits and upstream since our branch point — candidates
-# for manual inspection ("did upstream absorb this semantically?").
-if git rev-parse --verify "$PATCH_BRANCH" &>/dev/null; then
+# git cherry catches exact patch-id matches, but misses semantic re-implementations
+# (same fix, different hash). Scoped to open PR branches only — not the full local
+# stack — so it stays precise regardless of how many infra-only commits we carry.
+echo "── Shadow coverage check ─────────────────────────────────────────────────"
+if [[ ${#OPEN_PR_BRANCHES[@]} -eq 0 ]]; then
+  echo "  ✓ No open PRs — nothing to check"
+else
   BASE_SHA="$(git merge-base "$PATCH_BRANCH" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" 2>/dev/null || true)"
   if [[ -n "$BASE_SHA" ]]; then
-    OUR_FILES="$(git diff --name-only "$BASE_SHA" "$PATCH_BRANCH" -- '*.py' 2>/dev/null | sort -u || true)"
-    UPSTREAM_FILES="$(git diff --name-only "$BASE_SHA" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" -- '*.py' 2>/dev/null | sort -u || true)"
-    SHADOW_FILES="$(comm -12 <(echo "$OUR_FILES") <(echo "$UPSTREAM_FILES") 2>/dev/null || true)"
+    # Collect files touched by commits in open PR branches (fetch from fork)
+    PR_FILES=""
+    for br in "${OPEN_PR_BRANCHES[@]}"; do
+      REF="$FORK_REMOTE/$br"
+      if git fetch "$FORK_REMOTE" "$br" &>/dev/null 2>&1 && \
+         git rev-parse --verify "$REF" &>/dev/null 2>&1; then
+        PR_FILES+="$(git diff --name-only "$BASE_SHA" "$REF" 2>/dev/null || true)"$'\n'
+      elif git rev-parse --verify "refs/heads/$br" &>/dev/null 2>&1; then
+        PR_FILES+="$(git diff --name-only "$BASE_SHA" "$br" 2>/dev/null || true)"$'\n'
+      fi
+    done
+    OUR_PR_FILES="$(echo "$PR_FILES" | sort -u | grep -v '^$' || true)"
+    UPSTREAM_FILES="$(git diff --name-only "$BASE_SHA" "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH" 2>/dev/null | sort -u || true)"
+    SHADOW_FILES="$(comm -12 <(echo "$OUR_PR_FILES") <(echo "$UPSTREAM_FILES") 2>/dev/null || true)"
 
-    echo "── Shadow coverage check ─────────────────────────────────────────────────"
     if [[ -n "$SHADOW_FILES" ]]; then
-      echo "  ⚠ Files touched by BOTH our patches AND upstream — verify manually:"
+      echo "  ⚠ Files touched by open PRs AND upstream — verify semantically:"
       while IFS= read -r f; do
-        # Show which of our commits last touched this file
         last_commit="$(git log --oneline "$BASE_SHA".."$PATCH_BRANCH" -- "$f" 2>/dev/null | head -1 || true)"
         echo "    $f"
         [[ -n "$last_commit" ]] && echo "      our: $last_commit"
       done <<< "$SHADOW_FILES"
-      echo "  → Run: git diff $UPSTREAM_REMOTE/$UPSTREAM_BRANCH -- <file> to compare"
+      echo "  → git diff $UPSTREAM_REMOTE/$UPSTREAM_BRANCH -- <file>"
     else
-      echo "  ✓ No file overlap — no shadow absorption risk"
+      echo "  ✓ No file overlap between open PRs and upstream"
     fi
-    echo "─────────────────────────────────────────────────────────────────────────"
-    echo ""
   fi
 fi
+echo "─────────────────────────────────────────────────────────────────────────"
+echo ""
 
 $PR_CHECK_ONLY && exit 0
 
