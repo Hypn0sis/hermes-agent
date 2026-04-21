@@ -20,8 +20,16 @@ REMOTE_HOST="${DEPLOY_HOST:-87.106.215.151}"
 REMOTE_SSH_KEY="${DEPLOY_SSH_KEY:-$HOME/.ssh/hypnoclaw-id_rsa}"
 REMOTE_SERVICE="${DEPLOY_SERVICE:-hermes-gateway}"
 REMOTE_PATH="\$HOME/.hermes/hermes-agent/"
+DEPLOY_SHA_FILE="$REPO_ROOT/.last-deploy-sha"
 
 SSH_CMD="ssh -i $REMOTE_SSH_KEY"
+
+# Skip deploy if HEAD SHA matches last deployed SHA
+CURRENT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+if [[ -f "$DEPLOY_SHA_FILE" ]] && [[ "$(cat "$DEPLOY_SHA_FILE")" == "$CURRENT_SHA" ]]; then
+  echo "✓ Already deployed ($CURRENT_SHA) — nothing to do."
+  exit 0
+fi
 
 echo "▶ Stopping $REMOTE_SERVICE on $REMOTE_USER@$REMOTE_HOST..."
 $SSH_CMD "$REMOTE_USER@$REMOTE_HOST" "systemctl --user stop $REMOTE_SERVICE 2>/dev/null || true"
@@ -56,6 +64,8 @@ else
   echo "    Check: journalctl --user -u $REMOTE_SERVICE -n 50"
   exit 1
 fi
+
+echo "$CURRENT_SHA" > "$DEPLOY_SHA_FILE"
 
 echo ""
 echo "✓ Deploy complete → $REMOTE_USER@$REMOTE_HOST"
