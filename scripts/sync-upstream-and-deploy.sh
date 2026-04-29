@@ -283,7 +283,7 @@ echo "────────────────────────�
 
 # ── Step 2b: Rebase PR branches (keeps open PRs up-to-date on fork) ──────────
 # These branches are submission-only — not deployed from.
-for branch in "${ACTIVE_BRANCHES[@]}"; do
+for branch in "${ACTIVE_BRANCHES[@]+"${ACTIVE_BRANCHES[@]}"}"; do
   [[ "$branch" == "$PATCH_BRANCH" ]] && continue
   if ! git rev-parse --verify "$branch" &>/dev/null; then
     echo "  ⚠ PR branch '$branch' not found locally — skipping"
