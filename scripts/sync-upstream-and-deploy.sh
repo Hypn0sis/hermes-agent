@@ -279,6 +279,11 @@ RPT_FORK_PUSHED=true
 echo ""
 echo "── Patch stack ($PATCH_BRANCH) ───────────────────────────────────────────"
 git log --oneline "$UPSTREAM_REF"..HEAD
+while IFS= read -r line; do
+  [[ "${line:0:1}" == "-" ]] \
+    && RPT_PATCHES_ABSORBED=$((RPT_PATCHES_ABSORBED + 1)) \
+    || RPT_PATCHES_PENDING=$((RPT_PATCHES_PENDING + 1))
+done < <(git cherry "$UPSTREAM_REF" HEAD 2>/dev/null || true)
 echo "──────────────────────────────────────────────────────────────────────────"
 
 # ── Step 2b: Rebase PR branches (keeps open PRs up-to-date on fork) ──────────
